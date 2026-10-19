@@ -21,8 +21,12 @@
   .alarm .status{background:#E8505B;animation:blink 1s infinite}
   .venter .status{background:#F4A261;color:#12343B}
   @keyframes blink{50%{opacity:.55}}
-  #kvitter{display:none;width:100%;margin-top:12px;padding:20px;font-size:20px;font-weight:700;border:0;border-radius:14px;background:#fff;color:#E8505B}
-  .alarm #kvitter{display:block}
+  #kvitterboks{display:none;margin-top:12px;gap:8px}
+  .alarm #kvitterboks{display:flex}
+  #kode{flex:1;min-width:0;padding:16px;font-size:20px;border:0;border-radius:14px;text-align:center;letter-spacing:.3em}
+  #kvitter{flex:1;padding:16px;font-size:20px;font-weight:700;border:0;border-radius:14px;background:#fff;color:#E8505B}
+  #kodefeil{display:none;text-align:center;font-weight:600;color:#ffd0a0;margin-top:8px}
+  .rad.fire{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .hint{font-size:13px;opacity:.75;text-align:center;margin-top:8px;display:none}
   .alarm .hint{display:block}
   input[type=range]{width:100%;height:40px;accent-color:#F4A261}
@@ -47,23 +51,30 @@
   <div class="verdi" id="verdi">6.0</div>
   <div class="enhet">mmol/L</div>
   <div class="status" id="status">Normalt blodsukker</div>
-  <button id="kvitter" onclick="kvitter()">KVITTER – jeg er hos barnet</button>
-  <div class="hint">Alarmen kan bare stoppes her på pumpa.</div>
+  <div id="kvitterboks">
+    <input id="kode" type="password" inputmode="numeric" autocomplete="off" placeholder="Kode" aria-label="Kvitteringskode">
+    <button id="kvitter" onclick="kvitter()">Kvittering</button>
+  </div>
+  <div id="kodefeil">Feil kode – alarmen fortsetter</div>
+  <div class="hint">Alarmen kan bare stoppes her på pumpa, med kode.</div>
 </div>
 
 <div class="kort">
   <label>Blodsukker</label>
-  <input type="range" id="glider" min="2" max="15" step="0.1" value="6">
-  <div class="rad">
+  <input type="range" id="glider" min="2" max="20" step="0.1" value="6">
+  <div class="rad fire">
     <button id="fall" onclick="settModus('fall')">Fall sakte</button>
-    <button id="stopp" onclick="settModus('stopp')" class="valgt">Stopp</button>
+    <button id="hoy" onclick="settModus('hoy')">Stig sakte</button>
     <button id="stig" onclick="settModus('stig')">Gi druesukker</button>
+    <button id="stopp" onclick="settModus('stopp')" class="valgt">Stopp</button>
   </div>
 </div>
 
 <div class="kort">
-  <label>Alarmgrense: <b id="gtekst">4.0</b> mmol/L</label>
-  <input type="range" id="grense" min="3" max="6" step="0.1" value="4">
+  <label>Alarm ved lavt blodsukker: under <b id="gtekst">3.6</b> mmol/L</label>
+  <input type="range" id="grense" min="3" max="6" step="0.1" value="3.6">
+  <label>Alarm ved høyt blodsukker: over <b id="htekst">10.0</b> mmol/L</label>
+  <input type="range" id="grenseHoy" min="8" max="15" step="0.1" value="10">
 </div>
 
 <div class="kort">
@@ -76,11 +87,13 @@
 // ---------- Innstillinger ----------
 const SERVICE_UUID  = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 const KOMMANDO_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
-const PAMINNELSE_MIN = 10;   // ny alarm hvis blodsukkeret fortsatt er lavt etter kvittering
+const PAMINNELSE_MIN = 10;   // ny alarm hvis blodsukkeret fortsatt er for lavt/høyt etter kvittering
+const KVITTERINGSKODE = '1234';   // koden som må tastes for å kvittere alarmen – bytt til egen kode
 // -----------------------------------
 
 const $ = id => document.getElementById(id);
-let blodsukker = 6.0, grense = 4.0, modus = 'stopp';
+let blodsukker = 6.0, grense = 3.6, grenseHoy = 10.0, modus = 'stopp';
+let alarmType = '';   // 'lav' eller 'hoy'
 let alarmAktiv = false, alarmStart = 0, kvittertTid = 0, ventPaNormalt = false;
 const armband = [];   // {navn, enhet, kar, tilkoblet, tilstand}
 
@@ -151,37 +164,53 @@ function fjernArmband(i) {
 }
 
 // ---------- Alarmlogikk (samme regler som en ekte pumpe ville hatt) ----------
-function startAlarm() {
-  alarmAktiv = true; alarmStart = Date.now(); ventPaNormalt = false;
+function utenforGrense() {
+  if (blodsukker < grense) return 'lav';
+  if (blodsukker > grenseHoy) return 'hoy';
+  return '';
+}
+function tilbakeINormal() { return blodsukker >= grense + 0.3 && blodsukker <= grenseHoy - 0.3; }
+function startAlarm(type) {
+  alarmAktiv = true; alarmType = type; alarmStart = Date.now(); ventPaNormalt = false;
   sendAlle('ON');
   if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
 }
 function oppdaterAlarm() {
-  const lavt = blodsukker < grense;
-  if (alarmAktiv) return;                       // står til noen kvitterer
+  const type = utenforGrense();
+  if (alarmAktiv) return;                       // står til noen kvitterer med riktig kode
   if (ventPaNormalt) {
-    if (blodsukker >= grense + 0.3) ventPaNormalt = false;
-    else if (lavt && Date.now() - kvittertTid >= PAMINNELSE_MIN * 60000) startAlarm();
-  } else if (lavt) startAlarm();
+    if (tilbakeINormal()) ventPaNormalt = false;
+    else if (type && Date.now() - kvittertTid >= PAMINNELSE_MIN * 60000) startAlarm(type);
+  } else if (type) startAlarm(type);
 }
 function kvitter() {
   if (!alarmAktiv) return;
+  const felt = $('kode');
+  if (felt.value.trim() !== KVITTERINGSKODE) {
+    $('kodefeil').style.display = 'block';
+    felt.value = ''; felt.focus();
+    return;
+  }
+  felt.value = ''; $('kodefeil').style.display = 'none';
   alarmAktiv = false; kvittertTid = Date.now();
-  ventPaNormalt = blodsukker < grense + 0.3;
+  ventPaNormalt = !tilbakeINormal();
   sendAlle('OFF');
   tegn();
 }
+$('kode').addEventListener('keydown', e => { if (e.key === 'Enter') kvitter(); });
 
 // ---------- Kontroller ----------
 let drar = false;
 $('glider').addEventListener('input', e => { drar = true; blodsukker = +e.target.value; modus = 'stopp'; tegn(); });
 $('glider').addEventListener('change', () => { drar = false; oppdaterAlarm(); tegn(); });
 $('grense').addEventListener('input', e => { grense = +e.target.value; oppdaterAlarm(); tegn(); });
+$('grenseHoy').addEventListener('input', e => { grenseHoy = +e.target.value; oppdaterAlarm(); tegn(); });
 function settModus(m) { modus = m; tegn(); }
 
 setInterval(() => {
   if (modus === 'fall') blodsukker = Math.max(2, blodsukker - 0.2);
   if (modus === 'stig') { blodsukker = Math.min(15, blodsukker + 0.4); if (blodsukker >= 6) modus = 'stopp'; }
+  if (modus === 'hoy') blodsukker = Math.min(20, blodsukker + 0.3);
   blodsukker = Math.round(blodsukker * 10) / 10;
   oppdaterAlarm();
   tegn();
@@ -196,14 +225,16 @@ function tegn() {
   if (!drar) $('glider').value = blodsukker;
   $('verdi').textContent = blodsukker.toFixed(1);
   $('gtekst').textContent = grense.toFixed(1);
+  $('htekst').textContent = grenseHoy.toFixed(1);
+  const navn = alarmType === 'hoy' ? 'HØYT BLODSUKKER' : 'LAVT BLODSUKKER';
   $('hoved').className = 'kort' + (alarmAktiv ? ' alarm' : (ventPaNormalt ? ' venter' : ''));
   $('status').textContent = alarmAktiv
-    ? ((Date.now() - alarmStart) < 15000 ? 'ALARM – korte vibrasjoner (' : 'IKKE KVITTERT – konstant vibrasjon (')
+    ? navn + ((Date.now() - alarmStart) < 15000 ? ' – korte vibrasjoner (' : ' – IKKE KVITTERT, konstant vibrasjon (')
       + tid(Math.floor((Date.now() - alarmStart) / 1000)) + ')'
     : ventPaNormalt
-      ? 'Kvittert for ' + tid(Math.floor((Date.now() - kvittertTid) / 1000)) + ' siden – fortsatt lavt'
+      ? 'Kvittert for ' + tid(Math.floor((Date.now() - kvittertTid) / 1000)) + ' siden – fortsatt ' + (blodsukker > grenseHoy - 0.3 ? 'høyt' : 'lavt')
       : 'Normalt blodsukker';
-  ['fall', 'stopp', 'stig'].forEach(m => $(m).className = modus === m ? 'valgt' : '');
+  ['fall', 'hoy', 'stig', 'stopp'].forEach(m => $(m).className = modus === m ? 'valgt' : '');
   $('liste').innerHTML = armband.length === 0
     ? '<div class="armband"><span style="opacity:.7">Ingen armbånd koblet til ennå</span></div>'
     : armband.map((a, i) => {
